@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+last_trade.json
+bot.log
+data/
+.pytest_cache/
+.DS_Store
