@@ -105,6 +105,7 @@ DRY_RUN = False
 .venv/bin/python backtest.py --strategy momentum_monthly --symbol QQQ --mode follow --years 20
 .venv/bin/python backtest.py --strategy ma_crossover --param short=50 --param long=200
 .venv/bin/python backtest.py --compare --years 20                   # every strategy, 5 symbols
+.venv/bin/python backtest.py --compare --years 20 --cash-rate tbill # idle cash earns T-bill interest
 .venv/bin/python intraday_backtest.py --budget 20000 --symbols SPY QQQ
 ```
 
@@ -129,6 +130,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mesziy.tradebot.plis
 ## Results
 
 All results use split- and dividend-adjusted prices, fills at the next day's open (or next 5-minute bar) and a trading cost per fill (0.05% daily, 0.03% intraday). Data runs to October 2026.
+
+**Idle cash earns 0% in the tables below** unless stated, which slightly understates strategies that spend time out of the market. [Cash interest](#does-interest-on-idle-cash-change-anything) shows the effect of adding it. The Sharpe ratio is computed without subtracting a risk-free rate.
 
 ### The original bot: 20/50 crossover on AAPL, 10 years
 
@@ -157,6 +160,22 @@ The bot made money but captured only about half of the stock's yearly return. La
 | Donchian 55/20 breakout | 2.9% / −25% | 6.9% / −20% | 14.1% / −28% |
 
 Slow, monthly-checked trend and momentum rules on broad funds kept most of the return while roughly halving the 2008 crash. Faster rules gave up much more. None beat buy and hold.
+
+### Does interest on idle cash change anything?
+
+A fair question from a reader: the strategies sit in cash roughly 10 to 90% of the time, and real cash earns interest. With `--cash-rate tbill`, idle cash earns the historical 13-week US T-bill yield (averaging 1.6% a year over these 20 years, 2.4% over the last 10).
+
+| Yearly return, 20 years | SPY: 0% cash → T-bills | QQQ | AAPL |
+|---|---|---|---|
+| Buy & hold | 11.0% | 16.1% | 28.3% |
+| MA crossover 20/50 | 6.1% → 6.5% | 7.8% → 8.3% | 16.9% → 17.5% |
+| MA crossover 50/200 | 8.8% → 9.1% | 13.4% → 14.0% | 20.8% → 21.3% |
+| Trend 200-day, monthly | 8.6% → 8.9% | 12.5% → 12.8% | 23.5% → 23.9% |
+| Momentum 12-month, monthly | 9.7% → 10.0% | 15.1% → 15.4% | 18.2% → 18.4% |
+| RSI(2) dip buying | 2.8% → 4.2% | 3.1% → 4.5% | 5.0% → 6.4% |
+| Donchian 55/20 | 2.9% → 3.7% | 6.9% → 7.6% | 14.1% → 14.9% |
+
+Interest adds 0.2 to 1.4 points a year, the most for strategies that are rarely invested. On the 10-year AAPL test it lifts the 20/50 bot from 15.6% to 16.7% a year, against 29.2% for buy and hold. It narrows the gap but changes no conclusion. The intraday backtester also leaves overnight cash uninvested.
 
 ### Day trading with 20,000 HUF (about $61), 2019 to 2026
 

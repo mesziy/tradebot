@@ -99,6 +99,16 @@ def test_follow_mode_enters_on_day_one():
     assert len(backtest.simulate(prices, position, 1, 0.0, "follow")["trades"]) == 1
 
 
+def test_idle_cash_earns_interest():
+    prices = daily(np.full(400, 10.0))
+    position = pd.Series(0.0, index=prices.index)  # always in cash
+    rates = backtest.cash_rates(prices.index, "0.05")
+    r = backtest.simulate(prices, position, 1, 0.0, cash_rate=rates)
+    years = (r["equity"].index[-1] - r["equity"].index[0]).days / 365
+    assert r["equity"].iloc[-1] == pytest.approx(backtest.START_CAPITAL * 1.05 ** years)
+    assert backtest.simulate(prices, position, 1, 0.0)["equity"].iloc[-1] == backtest.START_CAPITAL
+
+
 # --- intraday ----------------------------------------------------------------------
 
 def intraday_bars():

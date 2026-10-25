@@ -10,6 +10,9 @@ Usage:
     python backtest.py --strategy rsi2 --symbol SPY --years 20
     python backtest.py --strategy ma_crossover --param short=50 --param long=200
     python backtest.py --compare                          # every strategy, several symbols
+    python backtest.py --cash-rate tbill                  # idle cash earns T-bill interest
+
+Idle cash earns nothing unless --cash-rate is given.
 """
 
 import argparse
@@ -48,12 +51,25 @@ def fetch_history(symbol: str, years: int) -> pd.DataFrame:
     return df[["Open", "High", "Low", "Close"]]
 
 
+def cash_rates(index: pd.DatetimeIndex, spec: str) -> pd.Series:
+    """Annual interest rate on idle cash for each day: a fixed number, or "tbill"
+    for the historical 13-week US Treasury bill yield (^IRX)."""
+    if spec != "tbill":
+        return pd.Series(float(spec), index=index)
+    irx = yf.Ticker("^IRX").history(start=(index[0] - timedelta(days=10)).strftime("%Y-%m-%d"))["Close"]
+    if irx.empty:
+        raise SystemExit("No T-bill data returned for ^IRX")
+    irx.index = irx.index.tz_convert(index.tz) if index.tz else irx.index.tz_localize(None)
+    return (irx / 100).reindex(index.union(irx.index)).ffill().reindex(index).fillna(0.0)
+
+
 def simulate(df: pd.DataFrame, position: pd.Series, years: int, cost_pct: float,
-             mode: str = "crossover") -> dict:
+             mode: str = "crossover", cash_rate: pd.Series | None = None) -> dict:
     """Trade the position changes; return equity curves, trades and stats.
 
     In "follow" mode the account starts matched to the strategy (buying on day
     one if it already says hold); in "crossover" mode it waits for the first flip.
+    `cash_rate` is the annual interest earned on idle cash (default: none).
     """
     first_valid = position.first_valid_index()
     if first_valid is None:
@@ -66,8 +82,13 @@ def simulate(df: pd.DataFrame, position: pd.Series, years: int, cost_pct: float,
     already_holding = position.shift(1).loc[df.index[0]] == 1
     pending = "buy" if mode == "follow" and already_holding else None
     trades, equity = [], []
+    prev_date = None
 
     for date, row in df.iterrows():
+        # Interest on idle cash since the previous trading day (weekends included).
+        if cash_rate is not None and prev_date is not None and cash > 0:
+            cash *= (1 + cash_rate[prev_date]) ** ((date - prev_date).days / 365)
+        prev_date = date
         # Fill yesterday's signal at today's open.
         if pending == "buy" and shares == 0:
             shares, cash = cash / (row["Open"] * (1 + cost_pct)), 0.0
@@ -106,14 +127,15 @@ def stats(equity: pd.Series, days: int) -> dict:
     }
 
 
-def run_single(symbol, name, params, years, cost_pct, mode) -> None:
+def run_single(symbol, name, params, years, cost_pct, mode, cash_spec) -> None:
     df = fetch_history(symbol, years)
-    r = simulate(df, strategies.compute(name, df, params)["position"], years, cost_pct, mode)
+    r = simulate(df, strategies.compute(name, df, params)["position"], years, cost_pct, mode,
+                 cash_rates(df.index, cash_spec))
     s, h, d = r["strategy"], r["buy_hold"], r["df"]
 
     print(f"\n{symbol}  {name} {params or '(defaults)'}  |  "
           f"{d.index[0]:%Y-%m-%d} to {d.index[-1]:%Y-%m-%d} ({r['days'] / 365.25:.1f} years)")
-    print(f"Starting capital ${START_CAPITAL:,.0f}, trading cost {cost_pct:.2%} per fill, {mode} mode\n")
+    print(f"Starting capital ${START_CAPITAL:,.0f}, trading cost {cost_pct:.2%} per fill, {mode} mode, cash interest: {cash_label(cash_spec)}\n")
 
     print(f"{'':22}{'Strategy':>14}{'Buy & hold':>14}")
     print(f"{'Final value':22}{s['final']:>14,.0f}{h['final']:>14,.0f}")
@@ -140,16 +162,17 @@ def run_single(symbol, name, params, years, cost_pct, mode) -> None:
     print("\nPrices are adjusted for splits and dividends. Past results don't predict future ones.")
 
 
-def run_compare(symbols, years, cost_pct) -> None:
-    print(f"\nAll strategies, last {years} years, trading cost {cost_pct:.2%} per fill, follow mode. "
-          "CAGR = yearly return, DD = biggest drop.")
+def run_compare(symbols, years, cost_pct, cash_spec) -> None:
+    print(f"\nAll strategies, last {years} years, trading cost {cost_pct:.2%} per fill, follow mode, "
+          f"cash interest: {cash_label(cash_spec)}. CAGR = yearly return, DD = biggest drop.")
     header = f"{'':22}{'CAGR':>7}{'DD':>8}{'Sharpe':>8}{'Trades/yr':>11}{'Win%':>6}{'Invested':>10}"
     for symbol in symbols:
         df = fetch_history(symbol, years)
+        rates = cash_rates(df.index, cash_spec)
         rows = []
         for label, name, params in COMPARE_SET:
             # Follow mode so every strategy starts matched, instead of waiting for a first flip.
-            r = simulate(df, strategies.compute(name, df, params)["position"], years, cost_pct, "follow")
+            r = simulate(df, strategies.compute(name, df, params)["position"], years, cost_pct, "follow", rates)
             rows.append((label, r))
         h = rows[0][1]["buy_hold"]
         d = rows[0][1]["df"]
@@ -163,6 +186,10 @@ def run_compare(symbols, years, cost_pct) -> None:
             print(f"{label:22}{s['cagr']:>7.1%}{s['max_dd']:>8.1%}{s['sharpe']:>8.2f}"
                   f"{r['closed'] / (r['days'] / 365.25):>11.1f}{win:>6}{r['exposure']:>10.0%}")
     print("\nPrices are adjusted for splits and dividends. Past results don't predict future ones.")
+
+
+def cash_label(spec: str) -> str:
+    return "13-week T-bill yield" if spec == "tbill" else f"{float(spec):.2%} a year"
 
 
 def parse_params(pairs):
@@ -183,17 +210,20 @@ def main() -> None:
     p.add_argument("--cost", type=float, default=0.0005,
                    help="Slippage per fill as a fraction (default 0.0005 = 0.05%%)")
     p.add_argument("--mode", default=config.SIGNAL_MODE, choices=["crossover", "follow"])
+    p.add_argument("--cash-rate", default="0", metavar="RATE|tbill",
+                   help="Annual interest on idle cash, e.g. 0.04, or 'tbill' for the historical "
+                        "13-week T-bill yield (default 0)")
     p.add_argument("--compare", action="store_true", help="Compare every strategy")
     p.add_argument("--symbols", nargs="+", default=COMPARE_SYMBOLS, help="Symbols for --compare")
     args = p.parse_args()
 
     if args.compare:
-        run_compare(args.symbols, args.years, args.cost)
+        run_compare(args.symbols, args.years, args.cost, args.cash_rate)
     else:
         # Use config.py's params only when backtesting config.py's strategy.
         params = parse_params(args.param) if args.param or args.strategy != config.STRATEGY \
             else config.STRATEGY_PARAMS
-        run_single(args.symbol, args.strategy, params, args.years, args.cost, args.mode)
+        run_single(args.symbol, args.strategy, params, args.years, args.cost, args.mode, args.cash_rate)
 
 
 if __name__ == "__main__":
